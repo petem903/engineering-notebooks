@@ -72,4 +72,4 @@ Console dice game with betting logic, randomized rolls, input validation, and ba
 
 ---
 
-*Automation & Controls Engineer · Yanfeng Automotive Interiors · EE @ UT Dallas*
+*Automation & Controls Engineer · Yanfeng Automotive Interiors · EE @ TXST*
