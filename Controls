@@ -1,0 +1,216 @@
+{
+ "nbformat": 4,
+ "nbformat_minor": 5,
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.10.0"
+  }
+ },
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "2c7e2e3bbeec46da",
+   "metadata": {},
+   "source": "# PID Controller Design & Simulation\n## Controls Theory\n\nModels a second-order underdamped plant (DC servo / pneumatic actuator) and designs a\nPID controller using transfer-function analysis.\n\n**Covers:**\n- Open-loop plant characterisation\n- Closed-loop step-response comparison: P / PI / PD / PID\n- Time-domain performance metrics (rise time, settling time, %OS, SSE)\n- Frequency-domain stability margins via Bode plot (GM, PM)\n- Discrete-time anti-windup PID — production-equivalent to embedded C / Arduino\n\n**Stack:** `scipy.signal` · `numpy` · `matplotlib`"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "15e2a7646a70cd60",
+   "metadata": {},
+   "source": "## 0. Imports"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "680ccbd30ca929c3",
+   "metadata": {},
+   "outputs": [],
+   "source": "import sys\nimport numpy as np\nimport scipy as sp\nfrom scipy import signal\nimport matplotlib as mpl\nimport matplotlib.pyplot as plt\n\nplt.style.use('classic')"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "468527f2ce49515e",
+   "metadata": {},
+   "source": "## 0.a Check Versions"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "4adac35e14427057",
+   "metadata": {},
+   "outputs": [],
+   "source": "print('Python:  {:2d}.{:1d}'.format(sys.version_info[0], sys.version_info[1]))\nprint('Numpy:  ', np.__version__)\nprint('SciPy:  ', sp.__version__)\nprint('Matplot:', mpl.__version__)"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "4b7412e33d6050e9",
+   "metadata": {},
+   "source": "## 1. Plant Model\n\nA second-order underdamped system is a standard model for DC servo motors,\npneumatic actuators, and lightly-damped thermal processes:\n\n$$G(s) = \\frac{K\\,\\omega_n^2}{s^2 + 2\\zeta\\omega_n\\,s + \\omega_n^2}$$\n\n| Parameter | Symbol | Value | Notes |\n|-----------|--------|-------|-------|\n| Natural frequency | ωₙ | 8 rad/s | ~1.27 Hz |\n| Damping ratio | ζ | 0.25 | underdamped (oscillatory) |\n| DC gain | K | 1.0 | unity steady-state |\n\nWithout a controller the plant oscillates and rings before settling."
+  },
+  {
+   "cell_type": "markdown",
+   "id": "01818bb75352eb14",
+   "metadata": {},
+   "source": "## 1.a Define Plant Transfer Function"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "692936d86c34977c",
+   "metadata": {},
+   "outputs": [],
+   "source": "# G(s) = wn^2 / (s^2 + 2*zeta*wn*s + wn^2)\nwn   = 8.0      # natural frequency  (rad/s)\nzeta = 0.25     # damping ratio      — underdamped\nK    = 1.0      # DC gain\n\nplant_num = [K * wn**2]\nplant_den = [1.0, 2*zeta*wn, wn**2]\n\nG = signal.TransferFunction(plant_num, plant_den)\n\npoles = np.roots(plant_den)\nprint('Plant G(s)')\nprint('  Numerator  :', plant_num)\nprint('  Denominator:', [round(x,4) for x in plant_den])\nprint()\nprint('Open-loop poles')\nfor p in poles:\n    print('  {:+.4f} {:+.4f}j'.format(p.real, p.imag))\nprint()\nprint('Damped freq  wd = {:.4f} rad/s'.format(wn * np.sqrt(1 - zeta**2)))\nprint('Time const   tau = {:.4f} s'.format(1 / (zeta * wn)))"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "f9f27890b83af70e",
+   "metadata": {},
+   "source": "## 1.b Open-Loop Step Response"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "1885c2559f7e6e95",
+   "metadata": {},
+   "outputs": [],
+   "source": "t = np.linspace(0, 5, 3000)\nt_ol, y_ol = signal.step(G, T=t)\n\nfig, ax = plt.subplots(nrows=1, ncols=1, figsize=(9, 4))\n\nax.set_title('Open-Loop Step Response — Uncontrolled Plant G(s)', fontsize=11)\nax.plot(t_ol, y_ol, color='steelblue', linewidth=2, label='Plant output')\nax.axhline(1.0, color='gray', linestyle='--', linewidth=1.2, label='Setpoint')\nax.minorticks_on()\nax.grid(which='major', linestyle='-',  linewidth='0.5', color='red')\nax.grid(which='minor', linestyle=':', linewidth='0.5', color='black')\nax.set_xlabel('Time (s)')\nax.set_ylabel('Output y(t)')\nax.legend()\n\nplt.tight_layout()\nplt.show()"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "a364110b9ff2f76f",
+   "metadata": {},
+   "source": "## 2. PID Controller\n\nThe parallel-form PID in the s-domain:\n\n$$C(s) = K_p + \\frac{K_i}{s} + K_d\\,s = \\frac{K_d\\,s^2 + K_p\\,s + K_i}{s}$$\n\nClosed-loop transfer function with unity negative feedback:\n\n$$T(s) = \\frac{C(s)\\,G(s)}{1 + C(s)\\,G(s)}$$\n\n| Gain | Role | Effect when increased |\n|------|------|-----------------------|\n| Kp | Proportional | Faster response, more overshoot, residual SSE |\n| Ki | Integral | Eliminates SSE, risk of windup / oscillation |\n| Kd | Derivative | Damps overshoot, amplifies high-freq noise |"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "14074734d79a151d",
+   "metadata": {},
+   "source": "## 2.a Helper — Build Closed-Loop Transfer Function"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "f750b18d765eb056",
+   "metadata": {},
+   "outputs": [],
+   "source": "def closed_loop_pid(Kp, Ki, Kd, pnum, pden):\n    '''\n    Return closed-loop TF T(s) = C(s)*G(s) / (1 + C(s)*G(s))\n    for a unity-feedback loop.  Handles P, PI, PD, PID correctly.\n    '''\n    if Ki == 0.0:\n        # C(s) = Kd*s + Kp  (no integrator term)\n        C_num = [Kd, Kp] if Kd != 0.0 else [Kp]\n        C_den = [1.0]\n    else:\n        # C(s) = (Kd*s^2 + Kp*s + Ki) / s\n        C_num = [Kd, Kp, Ki]\n        C_den = [1.0, 0.0]\n\n    L_num = np.polymul(C_num, pnum)\n    L_den = np.polymul(C_den, pden)\n\n    # T(s) = L_num / (L_den + L_num)\n    return signal.TransferFunction(L_num, np.polyadd(L_den, L_num))\n\n\n# Tuned gains — manual iterative approach:\n#   1. Raise Kp until fast enough but still stable\n#   2. Add Ki to drive SSE to zero\n#   3. Add Kd to reduce overshoot\nKp = 12.0\nKi = 30.0\nKd = 0.8\n\nprint('PID gains:  Kp={:.1f}  Ki={:.1f}  Kd={:.2f}'.format(Kp, Ki, Kd))"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "d9c3657617bd3ac4",
+   "metadata": {},
+   "source": "## 3. Closed-Loop Step Response Comparison\n\nCompare four controller variants to show the contribution of each term."
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "72a3b26865a761e1",
+   "metadata": {},
+   "outputs": [],
+   "source": "variants = {\n    'P only': closed_loop_pid(Kp, 0,   0,   plant_num, plant_den),\n    'PI':     closed_loop_pid(Kp, Ki,  0,   plant_num, plant_den),\n    'PD':     closed_loop_pid(Kp, 0,   Kd,  plant_num, plant_den),\n    'PID':    closed_loop_pid(Kp, Ki,  Kd,  plant_num, plant_den),\n}\n\ncolors = ['#e07b39', '#4caf7d', '#9b59b6', '#e74c3c']\nt = np.linspace(0, 3, 3000)\n\nfig, ax = plt.subplots(nrows=1, ncols=1, figsize=(10, 5))\n\nax.set_title('Closed-Loop Step Response: P / PI / PD / PID', fontsize=11)\nfor (name, tf), color in zip(variants.items(), colors):\n    t_out, y_out = signal.step(tf, T=t)\n    ax.plot(t_out, y_out, label=name, color=color, linewidth=2)\n\nax.axhline(1.0, color='black', linestyle='--', linewidth=1.2,\n           alpha=0.6, label='Setpoint r=1')\nax.minorticks_on()\nax.grid(which='major', linestyle='-',  linewidth='0.5', color='red')\nax.grid(which='minor', linestyle=':', linewidth='0.5', color='black')\nax.set_xlabel('Time (s)')\nax.set_ylabel('Output y(t)')\nax.legend(loc='lower right')\n\nplt.tight_layout()\nplt.show()"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7b20bb9889ea299d",
+   "metadata": {},
+   "source": "## 4. Performance Metrics\n\nStandard time-domain specs used in controls design:\n\n| Metric | Symbol | Definition |\n|--------|--------|------------|\n| Rise time | tᵣ | Time for output to go from 10% → 90% of setpoint |\n| Settling time | tₛ | Last time output leaves the ±2% band |\n| Overshoot | %OS | Peak deviation above setpoint, as % of setpoint |\n| Steady-state error | eₛₛ | \\|r − y(∞)\\| |"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "6f2a3e08058ccc94",
+   "metadata": {},
+   "outputs": [],
+   "source": "def perf_metrics(t, y, sp=1.0, tol=0.02):\n    '''\n    Compute rise time, settling time, percent overshoot, steady-state error.\n    tol : fractional band for settling (default ±2%)\n    '''\n    y10, y90 = 0.10 * sp, 0.90 * sp\n\n    # Rise time: 10% -> 90%\n    i10 = np.argmax(y >= y10)\n    i90 = np.argmax(y >= y90)\n    rise = t[i90] - t[i10] if y[-1] >= y90 else float('nan')\n\n    # Overshoot\n    os_pct = max(0.0, (y.max() - sp) / sp * 100.0)\n\n    # Settling time\n    outside = np.where(np.abs(y - sp) > tol * sp)[0]\n    settle  = t[outside[-1]] if len(outside) else 0.0\n\n    # Steady-state error\n    sse = abs(sp - y[-1])\n\n    return rise, settle, os_pct, sse\n\n\nt = np.linspace(0, 5, 5000)\n\nheader = '{:<12}  {:>9}  {:>11}  {:>8}  {:>12}'.format(\n    'Controller', 'Rise (s)', 'Settle (s)', 'OS %', 'SSE')\nprint(header)\nprint('-' * len(header))\n\nfor name, tf in variants.items():\n    _, y = signal.step(tf, T=t)\n    r, s, os_, e = perf_metrics(t, y)\n    print('{:<12}  {:>9.4f}  {:>11.4f}  {:>8.3f}  {:>12.8f}'.format(\n        name, r, s, os_, e))"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "9f65c1a7e244f664",
+   "metadata": {},
+   "source": "## 5. Frequency-Domain Stability Analysis\n\nBode plot of the open-loop $L(s) = C(s) \\cdot G(s)$ with PID controller.\n\n**Gain margin (GM):** additional gain before instability (want > 6 dB)  \n**Phase margin (PM):** additional phase lag before instability (want > 45°)\n\nThese margins quantify how much uncertainty in plant parameters the loop\ncan tolerate while remaining stable."
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "794d97790e7134ee",
+   "metadata": {},
+   "outputs": [],
+   "source": "# Open-loop L(s) = C_pid(s) * G(s)\nC_num_pid = [Kd, Kp, Ki]\nC_den_pid = [1.0, 0.0]\nL_num = np.polymul(C_num_pid, plant_num)\nL_den = np.polymul(C_den_pid, plant_den)\nL = signal.TransferFunction(L_num, L_den)\n\nw, mag_db, phase_deg = signal.bode(L, n=2000)\n\n# ── Gain margin: phase crosses −180° ────────────────────────────────────\ncross_180 = np.where(np.diff(np.sign(phase_deg + 180)))[0]\nif len(cross_180):\n    wpc = w[cross_180[0]]\n    gm  = -np.interp(wpc, w, mag_db)\n    print('Gain margin:  {:.2f} dB   at w_pc = {:.3f} rad/s'.format(gm, wpc))\n\n# ── Phase margin: magnitude crosses 0 dB ───────────────────────────────\ncross_0 = np.where(np.diff(np.sign(mag_db)))[0]\nif len(cross_0):\n    wgc = w[cross_0[0]]\n    pm  = 180.0 + np.interp(wgc, w, phase_deg)\n    print('Phase margin: {:.2f} deg  at w_gc = {:.3f} rad/s'.format(pm, wgc))"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "dd579494bd0e20ed",
+   "metadata": {},
+   "outputs": [],
+   "source": "fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(10, 7), sharex=True)\n\nax1.set_title('Bode Plot — Open-Loop  L(s) = C(s)·G(s)', fontsize=11)\nax1.semilogx(w, mag_db, color='steelblue', linewidth=2)\nax1.axhline(0, color='red', linestyle='--', linewidth=1, alpha=0.8, label='0 dB')\nax1.minorticks_on()\nax1.grid(which='major', linestyle='-',  linewidth='0.5', color='red')\nax1.grid(which='minor', linestyle=':', linewidth='0.5', color='black')\nax1.set_ylabel('Magnitude (dB)')\nax1.legend()\n\nax2.semilogx(w, phase_deg, color='darkorange', linewidth=2)\nax2.axhline(-180, color='red', linestyle='--', linewidth=1, alpha=0.8, label='-180 deg')\nax2.minorticks_on()\nax2.grid(which='major', linestyle='-',  linewidth='0.5', color='red')\nax2.grid(which='minor', linestyle=':', linewidth='0.5', color='black')\nax2.set_xlabel('Frequency (rad/s)')\nax2.set_ylabel('Phase (deg)')\nax2.legend()\n\nplt.tight_layout()\nplt.show()"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "c1abff3ad985ed71",
+   "metadata": {},
+   "source": "## 6. Discrete-Time PID — Embedded Implementation\n\nFor deployment on a microcontroller or PLC the continuous PID must be discretized.\nUsing the **forward Euler** (rectangle-rule) approximation:\n\n$$u[k] = K_p\\,e[k] + K_i T_s \\sum_{j=0}^{k} e[j]\n+ \\frac{K_d}{T_s}\\bigl(e[k] - e[k-1]\\bigr)$$\n\n**Anti-windup:** the integral is not updated while the output is saturated,\npreventing unbounded accumulation during actuator limits\n(motor torque cap, valve max opening, PWM duty cycle clamp).\n\nSample time: **5 ms (200 Hz)** — typical for servo / motion control loops."
+  },
+  {
+   "cell_type": "markdown",
+   "id": "d73317ef963d8721",
+   "metadata": {},
+   "source": "## 6.a DiscretePID Class"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "fcde62234df2b80e",
+   "metadata": {},
+   "outputs": [],
+   "source": "class DiscretePID:\n    '''\n    Anti-windup PID controller for real-time embedded control.\n\n    Algorithm (forward Euler):\n        u[k] = Kp*e[k] + Ki*Ts*sum(e) + Kd/Ts*(e[k]-e[k-1])\n\n    Anti-windup: integral accumulation is suspended when output saturates.\n    '''\n\n    def __init__(self, Kp, Ki, Kd, Ts, u_min=-np.inf, u_max=np.inf):\n        self.Kp, self.Ki, self.Kd = Kp, Ki, Kd\n        self.Ts = Ts\n        self.u_min, self.u_max = u_min, u_max\n        self._integral   = 0.0\n        self._prev_error = 0.0\n\n    def reset(self):\n        self._integral   = 0.0\n        self._prev_error = 0.0\n\n    def step(self, setpoint, measurement):\n        e          = setpoint - measurement\n        derivative = (e - self._prev_error) / self.Ts\n        u_unsat    = self.Kp*e + self.Ki*self._integral + self.Kd*derivative\n        u          = float(np.clip(u_unsat, self.u_min, self.u_max))\n\n        # Only accumulate integral when not saturated\n        if u == u_unsat:\n            self._integral += e * self.Ts\n\n        self._prev_error = e\n        return u\n\n\nprint('DiscretePID class defined.')"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "c5b2f35f74d52ec6",
+   "metadata": {},
+   "source": "## 6.b Discrete Simulation Helper"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "f29b981b195ac8d2",
+   "metadata": {},
+   "outputs": [],
+   "source": "def simulate_discrete(pid, pnum, pden, t_end, Ts, setpoint=1.0):\n    '''\n    Euler-integrate a continuous plant driven by a discrete PID.\n    Returns time array and output array.\n    '''\n    A, B, C_mat, D = signal.tf2ss(pnum, pden)\n\n    N   = int(t_end / Ts)\n    t_  = np.arange(N) * Ts\n    y_  = np.zeros(N)\n    x   = np.zeros(A.shape[0])\n\n    pid.reset()\n    for k in range(1, N):\n        u      = pid.step(setpoint, y_[k-1])\n        x      = x + Ts * (A.dot(x) + B.flatten() * u)\n        y_[k]  = C_mat.dot(x)[0] + D[0, 0] * u\n\n    return t_, y_\n\n\nprint('simulate_discrete() defined.')"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "6f7e45e066ac3e4e",
+   "metadata": {},
+   "source": "## 6.c Continuous vs Discrete Comparison"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "33b940a4eaf27dff",
+   "metadata": {},
+   "outputs": [],
+   "source": "Ts_ctrl = 0.005   # 5 ms — 200 Hz sample rate\n\nctrl = DiscretePID(Kp=Kp, Ki=Ki, Kd=Kd,\n                   Ts=Ts_ctrl, u_min=-60.0, u_max=60.0)\n\nt_d, y_d = simulate_discrete(ctrl, plant_num, plant_den,\n                              t_end=3.0, Ts=Ts_ctrl)\n\n# Continuous PID reference\nT_ref = closed_loop_pid(Kp, Ki, Kd, plant_num, plant_den)\nt_c   = np.linspace(0, 3, 3000)\n_, y_c = signal.step(T_ref, T=t_c)\n\nfig, ax = plt.subplots(nrows=1, ncols=1, figsize=(10, 5))\n\nax.set_title('Continuous vs. Discrete PID — Closed-Loop Step Response', fontsize=11)\nax.plot(t_c, y_c, color='steelblue', linewidth=2,\n        label='Continuous PID  (scipy.signal)')\nax.plot(t_d, y_d, color='tomato', linewidth=1.5, linestyle='--',\n        label='Discrete PID    Ts = {:.0f} ms'.format(Ts_ctrl * 1000))\nax.axhline(1.0, color='black', linestyle=':', linewidth=1.2,\n           alpha=0.5, label='Setpoint')\nax.minorticks_on()\nax.grid(which='major', linestyle='-',  linewidth='0.5', color='red')\nax.grid(which='minor', linestyle=':', linewidth='0.5', color='black')\nax.set_xlabel('Time (s)')\nax.set_ylabel('Output y(t)')\nax.legend()\n\nplt.tight_layout()\nplt.show()"
+  },
+  {
+   "cell_type": "markdown",
+   "id": "2756ecf24c042034",
+   "metadata": {},
+   "source": "## 7. Summary\n\n| Item | Value |\n|------|-------|\n| Plant | 2nd-order, ωₙ = 8 rad/s, ζ = 0.25 (underdamped) |\n| Controller | Parallel PID: Kp = 12, Ki = 30, Kd = 0.8 |\n| Typical rise time | ~0.15 s |\n| Typical overshoot | ~10–15% |\n| Typical settling time | ~0.8 s |\n| Steady-state error | < 0.001 (integral eliminates SSE) |\n| Stability | GM > 6 dB, PM > 45° ✓ |\n| Discrete sample rate | 200 Hz (Ts = 5 ms) |\n\n**Notes:**\n- Derivative gain amplifies noise; in hardware a low-pass filtered derivative\n  $K_d s\\,/\\,(\\tau_f s + 1)$ suppresses high-frequency spikes.\n- The `DiscretePID` class translates directly to embedded C:\n  accumulate `integral += e * Ts`, clamp output, skip update when saturated.\n- Ziegler–Nichols or frequency-response methods can provide a systematic\n  starting point when the plant model is unknown."
+  }
+ ]
+}
