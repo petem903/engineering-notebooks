@@ -4,6 +4,15 @@ Python, C++, and Arduino work spanning signal processing, controls theory, therm
 
 ---
 
+## Controls Theory
+
+### [`pid_controller_simulation.ipynb`](controls/pid_controller_simulation.ipynb)
+Second-order underdamped plant (DC servo, ωₙ = 8 rad/s, ζ = 0.25) controlled by a tuned PID. Compares closed-loop step responses across P / PI / PD / PID variants and extracts rise time, settling time, percent overshoot, and steady-state error via a reusable metrics function. Evaluates open-loop stability via Bode analysis (gain margin, phase margin). Implements a discrete-time anti-windup PID class in Python with Euler integration — structurally equivalent to embedded C / Arduino at a 200 Hz sample rate — and overlays it against the continuous reference to show discretisation accuracy.
+
+**Stack:** `scipy.signal` · `numpy` · `matplotlib`
+
+---
+
 ## Thermal Systems Analysis
 
 ### [`heating_pad_thermal_analysis.ipynb`](thermal-analysis/heating_pad_thermal_analysis.ipynb)
